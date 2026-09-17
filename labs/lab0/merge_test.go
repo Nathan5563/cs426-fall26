@@ -2,6 +2,7 @@ package lab0_test
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"cs426.cloud/lab0"
@@ -107,5 +108,88 @@ func TestMergeFetches(t *testing.T) {
 }
 
 func TestMergeFetchesAdditional(t *testing.T) {
-	// TODO: add your extra tests here
+	t.Run("one side empty", func(t *testing.T) {
+		a := make(chan string, 3)
+		b := make(chan string)
+		out := make(chan string, 10)
+		a <- "a1"
+		a <- "a2"
+		a <- "a3"
+		close(a)
+		close(b)
+
+		lab0.MergeFetches(newChannelFetcher(a), newChannelFetcher(b), out)
+		require.Equal(t, []string{"a1", "a2", "a3"}, chanToSlice(out))
+	})
+
+	t.Run("both sides", func(t *testing.T) {
+		a := make(chan string, 2)
+		b := make(chan string, 2)
+		out := make(chan string, 10)
+		a <- "a1"
+		a <- "a2"
+		b <- "b1"
+		b <- "b2"
+		close(a)
+		close(b)
+
+		lab0.MergeFetches(newChannelFetcher(a), newChannelFetcher(b), out)
+		require.ElementsMatch(t, []string{"a1", "a2", "b1", "b2"}, chanToSlice(out))
+	})
+
+	t.Run("unbuffered out", func(t *testing.T) {
+		a := make(chan string, 2)
+		b := make(chan string, 2)
+		out := make(chan string)
+		a <- "a1"
+		a <- "a2"
+		b <- "b1"
+		b <- "b2"
+		close(a)
+		close(b)
+
+		go lab0.MergeFetches(newChannelFetcher(a), newChannelFetcher(b), out)
+		require.ElementsMatch(t, []string{"a1", "a2", "b1", "b2"}, chanToSlice(out))
+	})
+
+	t.Run("stress test", func(t *testing.T) {
+		N := 10000
+		expected_a := make([]string, N)
+		expected_b := make([]string, N)
+		for i := 0; i < N; i++ {
+			expected_a[i] = "a" + strconv.Itoa(i)
+			expected_b[i] = "b" + strconv.Itoa(i)
+		}
+
+		a := make(chan string)
+		b := make(chan string)
+		out := make(chan string)
+
+		go func() {
+			for _, v := range expected_a {
+				a <- v
+			}
+			close(a)
+		}()
+		go func() {
+			for _, v := range expected_b {
+				b <- v
+			}
+			close(b)
+		}()
+
+		go lab0.MergeFetches(newChannelFetcher(a), newChannelFetcher(b), out)
+
+		var as []string
+		var bs []string
+		for v := range out {
+			if v[0] == 'a' {
+				as = append(as, v)
+			} else {
+				bs = append(bs, v)
+			}
+		}
+		require.Equal(t, expected_a, as)
+		require.Equal(t, expected_b, bs)
+	})
 }

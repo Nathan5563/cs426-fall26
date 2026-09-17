@@ -134,6 +134,96 @@ func TestParallelFetcher(t *testing.T) {
 	})
 }
 
+type barrierFetcher struct {
+	wg sync.WaitGroup
+}
+
+func (f *barrierFetcher) Fetch() (string, bool) {
+	f.wg.Done()
+	f.wg.Wait()
+	return "", true
+}
+
 func TestParallelFetcherAdditional(t *testing.T) {
-	// TODO: add your additional tests here
+	t.Run("empty fetcher", func(t *testing.T) {
+		pf := lab0.NewParallelFetcher(NewMockFetcher([]string{}, 0), 2)
+
+		_, ok := pf.Fetch()
+		require.False(t, ok)
+		_, ok = pf.Fetch()
+		require.False(t, ok)
+	})
+
+	t.Run("reaches limit", func(t *testing.T) {
+		limit := 10
+		bf := &barrierFetcher{}
+		bf.wg.Add(limit)
+		pf := lab0.NewParallelFetcher(bf, limit)
+
+		done := make(chan struct{})
+		go func() {
+			var wg sync.WaitGroup
+			for i := 0; i < limit; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					pf.Fetch()
+				}()
+			}
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("fewer than limit concurrent fetches")
+		}
+	})
+
+	t.Run("stress test", func(t *testing.T) {
+		N := 1000
+		workers := 100
+		limit := 10
+		data := make([]string, N)
+		for i := 0; i < N; i++ {
+			data[i] = strconv.Itoa(i)
+		}
+		mf := NewMockFetcher(data, 0)
+		pf := lab0.NewParallelFetcher(mf, limit)
+
+		var mu sync.Mutex
+		recvd := make([]string, 0, N)
+		var maxActive atomic.Int32
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				for {
+					v, ok := pf.Fetch()
+					if !ok {
+						return
+					}
+
+					a := mf.ActiveFetches()
+					if a > maxActive.Load() {
+						maxActive.Store(a)
+					}
+
+					mu.Lock()
+					recvd = append(recvd, v)
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+
+		require.ElementsMatch(t, data, recvd)
+		require.LessOrEqual(t, maxActive.Load(), int32(limit))
+
+		_, ok := pf.Fetch()
+		require.False(t, ok)
+	})
 }

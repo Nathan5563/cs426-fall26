@@ -2,6 +2,7 @@ package lab0
 
 import (
 	"context"
+	"sync/atomic"
 
 	"golang.org/x/sync/semaphore"
 )
@@ -13,7 +14,7 @@ import (
 type ParallelFetcher struct {
 	fetcher Fetcher
 	sem     semaphore.Weighted
-	done    bool
+	done    atomic.Bool
 }
 
 // ParallelFetcher ensures that no more than maxConcurrentLimit clients call `Fetcher.Fetch()` at any given time.
@@ -25,7 +26,6 @@ func NewParallelFetcher(fetcher Fetcher, maxConcurrencyLimit int) *ParallelFetch
 	return &ParallelFetcher{
 		fetcher: fetcher,
 		sem:     *semaphore.NewWeighted(int64(maxConcurrencyLimit)),
-		done:    false,
 	}
 }
 
@@ -33,7 +33,7 @@ func NewParallelFetcher(fetcher Fetcher, maxConcurrencyLimit int) *ParallelFetch
 // once `false` is returned; *however*, it is OK to have Fetch()s that are already in progress
 // (which will also return false).
 func (pf *ParallelFetcher) Fetch() (string, bool) {
-	if pf.done {
+	if pf.done.Load() {
 		return "", false
 	}
 
@@ -42,7 +42,7 @@ func (pf *ParallelFetcher) Fetch() (string, bool) {
 
 	msg, ok := pf.fetcher.Fetch()
 	if !ok {
-		pf.done = true
+		pf.done.Store(true)
 	}
 	return msg, ok
 }

@@ -44,6 +44,21 @@ func MergeChannels[T any](a <-chan T, b <-chan T, out chan<- T) {
 	}
 }
 
+// spec doesn't care about fully draining the channels if a cancel arrives,
+// but tests seem to depend on this behavior.
+func drain_then_cancel[T any](ctx context.Context, out chan<- T, msg T) error {
+	select {
+	case out <- msg:
+	default:
+		select {
+		case out <- msg:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
 // MergeChannelsOrCancel provides similar semantics to MergeChannels, but
 // allows for the caller to cancel processing by cancelling the context `ctx`.
 // Results from channels `a` and `b` should be read concurrently and written
@@ -75,10 +90,9 @@ func MergeChannelsOrCancel[T any](ctx context.Context, a <-chan T, b <-chan T, o
 				a = nil
 				done = b == nil
 			} else {
-				select {
-				case out <- msg:
-				case <-ctx.Done():
-					return ctx.Err()
+				err := drain_then_cancel(ctx, out, msg)
+				if err != nil {
+					return err
 				}
 			}
 		case msg, ok := <-b:
@@ -86,10 +100,9 @@ func MergeChannelsOrCancel[T any](ctx context.Context, a <-chan T, b <-chan T, o
 				b = nil
 				done = a == nil
 			} else {
-				select {
-				case out <- msg:
-				case <-ctx.Done():
-					return ctx.Err()
+				err := drain_then_cancel(ctx, out, msg)
+				if err != nil {
+					return err
 				}
 			}
 		}
