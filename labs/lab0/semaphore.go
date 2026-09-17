@@ -15,17 +15,11 @@ import (
 type Semaphore struct {
 	v      atomic.Int64
 	signal chan struct{}
-
-	// You may add any other state here. You are also free to remove
-	// or modify any existing members.
-
-	// You may not use semaphore.Weighted in your implementation.
 }
 
 func NewSemaphore() *Semaphore {
 	return &Semaphore{
-		signal: make(chan struct{}),
-		// You may add any other initialization here
+		signal: make(chan struct{}, 1),
 	}
 }
 
@@ -36,6 +30,10 @@ func NewSemaphore() *Semaphore {
 // is that calling Release before any Acquire will panic in semaphore.Weighted,
 // but calling Post() before Wait() should neither block nor panic in our interface.
 func (s *Semaphore) Post() {
+	if s.v.Load() == 0 {
+		s.signal <- struct{}{}
+	}
+	s.v.Add(1)
 }
 
 // Wait decrements the semaphore value by one, if there are resources
@@ -48,5 +46,13 @@ func (s *Semaphore) Post() {
 //
 // Analagous to Acquire(ctx, 1) in semaphore.Weighted.
 func (s *Semaphore) Wait(ctx context.Context) error {
+	if s.v.Load() == 0 {
+		select {
+		case <-s.signal:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	s.v.Add(-1)
 	return nil
 }

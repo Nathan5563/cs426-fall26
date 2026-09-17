@@ -2,6 +2,7 @@ package lab0
 
 import (
 	"context"
+	"sync"
 )
 
 // MergeChannels should read from the channels `a` and `b`
@@ -20,7 +21,27 @@ import (
 //   - https://go.dev/tour/concurrency/4
 //   - https://go.dev/tour/concurrency/5
 func MergeChannels[T any](a <-chan T, b <-chan T, out chan<- T) {
-	panic("TODO: add your implementation")
+	defer close(out)
+
+	done := false
+	for !done {
+		select {
+		case msg, ok := <-a:
+			if !ok {
+				a = nil
+				done = b == nil
+			} else {
+				out <- msg
+			}
+		case msg, ok := <-b:
+			if !ok {
+				b = nil
+				done = a == nil
+			} else {
+				out <- msg
+			}
+		}
+	}
 }
 
 // MergeChannelsOrCancel provides similar semantics to MergeChannels, but
@@ -42,7 +63,38 @@ func MergeChannels[T any](a <-chan T, b <-chan T, out chan<- T) {
 // It is expected that your implemented is similar to `MergeChannels`. You do
 // not need to refactor to deduplicate your code, but you can if you want to.
 func MergeChannelsOrCancel[T any](ctx context.Context, a <-chan T, b <-chan T, out chan<- T) error {
-	panic("TODO: add your implementation")
+	defer close(out)
+
+	done := false
+	for !done {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case msg, ok := <-a:
+			if !ok {
+				a = nil
+				done = b == nil
+			} else {
+				select {
+				case out <- msg:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		case msg, ok := <-b:
+			if !ok {
+				b = nil
+				done = a == nil
+			} else {
+				select {
+				case out <- msg:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // Fetcher is an interface which mimics fetching from some source
@@ -88,5 +140,38 @@ type Fetcher interface {
 // If you are stuck, consider reading the example for `WaitGroup` here:
 //   - https://pkg.go.dev/sync#example-WaitGroup
 func MergeFetches(a Fetcher, b Fetcher, out chan<- string) {
-	panic("TODO: add your implementation")
+	defer close(out)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+
+		a_done := false
+		for !a_done {
+			msg, ok := a.Fetch()
+			if !ok {
+				a_done = true
+			} else {
+				out <- msg
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		b_done := false
+		for !b_done {
+			msg, ok := b.Fetch()
+			if !ok {
+				b_done = true
+			} else {
+				out <- msg
+			}
+		}
+	}()
+
+	wg.Wait()
 }
