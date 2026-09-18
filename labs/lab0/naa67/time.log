@@ -12,4 +12,12 @@ Date  Started  Spent Work completed
                ----
                4:05  TOTAL time spent
 
-TODO write summary
+The hardest part of this assignment was dealing with the various bugs that 
+come with concurrent programming. Implementing the functionalities was
+relatively straightforward, but there are so many new classes of bugs that
+come with concurrent code that I took a lot of time debugging failed test
+cases. Some of the more annoying bugs were when I forgot to defer closing a
+channel or calling Done() on a WaitGroup. It was also challenging dealing with
+select statements when I want to prioritize one case over the other, since Go
+picks a case to run uniformly at random. I also spent a decent amount of time
+refreshing myself on Go as I haven't used it in a while.
