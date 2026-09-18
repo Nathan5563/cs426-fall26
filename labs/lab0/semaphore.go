@@ -2,7 +2,6 @@ package lab0
 
 import (
 	"context"
-	"sync/atomic"
 )
 
 // Semaphore mirrors Go's library package `semaphore.Weighted`
@@ -13,13 +12,12 @@ import (
 //   - when resources are depleted, block waiters and resume them
 //     when resources are available
 type Semaphore struct {
-	v      atomic.Int64
-	signal chan struct{}
+	resources chan struct{}
 }
 
 func NewSemaphore() *Semaphore {
 	return &Semaphore{
-		signal: make(chan struct{}, 1),
+		resources: make(chan struct{}),
 	}
 }
 
@@ -30,10 +28,7 @@ func NewSemaphore() *Semaphore {
 // is that calling Release before any Acquire will panic in semaphore.Weighted,
 // but calling Post() before Wait() should neither block nor panic in our interface.
 func (s *Semaphore) Post() {
-	if s.v.Load() == 0 {
-		s.signal <- struct{}{}
-	}
-	s.v.Add(1)
+	go func() { s.resources <- struct{}{} }()
 }
 
 // Wait decrements the semaphore value by one, if there are resources
@@ -46,13 +41,15 @@ func (s *Semaphore) Post() {
 //
 // Analagous to Acquire(ctx, 1) in semaphore.Weighted.
 func (s *Semaphore) Wait(ctx context.Context) error {
-	if s.v.Load() == 0 {
+	select {
+	case <-s.resources:
+		return nil
+	default:
 		select {
-		case <-s.signal:
+		case <-s.resources:
+			return nil
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
-	s.v.Add(-1)
-	return nil
 }
