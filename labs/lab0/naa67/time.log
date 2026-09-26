@@ -8,9 +8,10 @@ Date  Started  Spent Work completed
 09/16 12:35am  0:25  completed `queue.go`
 09/16  3:45pm  0:15  completed `parallel_fetcher.go`
 09/16  4:15pm  0:20  completed `semaphore.go`
-09/16  9:00pm  1:45  completed all testing and modifications
+09/16  9:00pm  1:45  ran tests and made modifications
+09/17  9:30pm  0:30  some more testing to catch bugs, final fixes
                ----
-               4:05  TOTAL time spent
+               4:35  TOTAL time spent
 
 The hardest part of this assignment was dealing with the various bugs that 
 come with concurrent programming. Implementing the functionalities was

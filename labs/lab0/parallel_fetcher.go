@@ -33,12 +33,19 @@ func NewParallelFetcher(fetcher Fetcher, maxConcurrencyLimit int) *ParallelFetch
 // once `false` is returned; *however*, it is OK to have Fetch()s that are already in progress
 // (which will also return false).
 func (pf *ParallelFetcher) Fetch() (string, bool) {
+	// fast path before acquiring
 	if pf.done.Load() {
 		return "", false
 	}
 
 	pf.sem.Acquire(context.Background(), 1)
 	defer pf.sem.Release(1)
+
+	// check again after acquiring since another caller may have
+	// seen false while we were blocked on the semaphore
+	if pf.done.Load() {
+		return "", false
+	}
 
 	msg, ok := pf.fetcher.Fetch()
 	if !ok {
