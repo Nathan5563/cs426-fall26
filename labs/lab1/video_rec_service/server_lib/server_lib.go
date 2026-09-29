@@ -20,6 +20,11 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const (
+	cacheRefreshBackoff = 10 * time.Second
+	cacheRefreshTimeout = 30 * time.Second
+)
+
 type VideoRecServiceOptions struct {
 	// Server address for the UserService"
 	UserServiceAddr string
@@ -41,6 +46,7 @@ type VideoRecServiceStats struct {
 	numReqsActive          uint64
 	numReqsErrUserService  uint64
 	numReqsErrVideoService uint64
+	numReqsStale           uint64
 	avgReqLatencyMs        float64
 }
 
@@ -52,9 +58,10 @@ func MakeVideoRecServiceStats() *VideoRecServiceStats {
 
 func (stats *VideoRecServiceStats) logRequestStart() time.Time {
 	stats.lock.Lock()
+	defer stats.lock.Unlock()
+
 	stats.numReqs++
 	stats.numReqsActive++
-	stats.lock.Unlock()
 	return time.Now()
 }
 
@@ -63,7 +70,10 @@ func (stats *VideoRecServiceStats) logRequestEnd(
 	success bool,
 ) {
 	reqLatencyMs := float64(time.Since(tStart)) / float64(time.Millisecond)
+
 	stats.lock.Lock()
+	defer stats.lock.Unlock()
+
 	stats.numReqsActive--
 	if !success {
 		stats.numReqsErr++
@@ -71,19 +81,60 @@ func (stats *VideoRecServiceStats) logRequestEnd(
 	stats.avgReqLatencyMs += (reqLatencyMs - stats.avgReqLatencyMs) /
 		float64(stats.numReqs-stats.numReqsActive)
 	stats.td.Add(reqLatencyMs, 1)
-	stats.lock.Unlock()
 }
 
 func (stats *VideoRecServiceStats) logUserServiceError() {
 	stats.lock.Lock()
+	defer stats.lock.Unlock()
+
 	stats.numReqsErrUserService++
-	stats.lock.Unlock()
 }
 
 func (stats *VideoRecServiceStats) logVideoServiceError() {
 	stats.lock.Lock()
+	defer stats.lock.Unlock()
+
 	stats.numReqsErrVideoService++
-	stats.lock.Unlock()
+}
+
+func (stats *VideoRecServiceStats) logStaleResponse() {
+	stats.lock.Lock()
+	defer stats.lock.Unlock()
+
+	stats.numReqsStale++
+}
+
+type trendingCache struct {
+	lock            sync.RWMutex
+	videos          []*vpb.VideoInfo
+	expirationTimeS uint64
+	populated       bool
+}
+
+func (cache *trendingCache) store(
+	videos []*vpb.VideoInfo,
+	expirationTimeS uint64,
+) {
+	cache.lock.Lock()
+	defer cache.lock.Unlock()
+
+	cache.videos = videos
+	cache.expirationTimeS = expirationTimeS
+	cache.populated = true
+}
+
+func (cache *trendingCache) load() ([]*vpb.VideoInfo, bool) {
+	cache.lock.RLock()
+	defer cache.lock.RUnlock()
+
+	return cache.videos, cache.populated
+}
+
+func (cache *trendingCache) expiration() time.Time {
+	cache.lock.RLock()
+	defer cache.lock.RUnlock()
+
+	return time.Unix(int64(cache.expirationTimeS), 0)
 }
 
 type VideoRecServiceServer struct {
@@ -92,6 +143,7 @@ type VideoRecServiceServer struct {
 	stats              *VideoRecServiceStats
 	userServiceClient  upb.UserServiceClient
 	videoServiceClient vpb.VideoServiceClient
+	cache              trendingCache
 }
 
 func MakeVideoRecServiceServer(options VideoRecServiceOptions) (
@@ -129,6 +181,25 @@ func (server *VideoRecServiceServer) GetTopVideos(
 	tStart := server.stats.logRequestStart()
 	defer func() { server.stats.logRequestEnd(tStart, err == nil) }()
 
+	resp, err = server.getPersonalizedVideos(ctx, req)
+	if err == nil || server.options.DisableFallback {
+		return resp, err
+	}
+
+	fallback, ok := server.getFallbackVideos(req.Limit)
+	if !ok {
+		return nil, err
+	}
+	log.Printf("serving fallback recommendations for user %d after error: %v",
+		req.UserId, err)
+	server.stats.logStaleResponse()
+	return fallback, nil
+}
+
+func (server *VideoRecServiceServer) getPersonalizedVideos(
+	ctx context.Context,
+	req *pb.GetTopVideosRequest,
+) (*pb.GetTopVideosResponse, error) {
 	userServiceClient, userConn, err := server.getUserServiceClient()
 	if err != nil {
 		return nil, err
@@ -156,13 +227,29 @@ func (server *VideoRecServiceServer) GetTopVideos(
 		defer videoConn.Close()
 	}
 
-	scoredVideos, err := server.getScoredVideos(ctx,
-		videoServiceClient, user, likedVideos, server.options.MaxBatchSize)
+	videoInfos, err := server.getVideoInfos(ctx,
+		videoServiceClient, likedVideos, server.options.MaxBatchSize)
 	if err != nil {
 		return nil, err
 	}
 
-	return sortAndTruncate(scoredVideos, req.Limit), nil
+	return sortAndTruncate(scoreVideos(user, videoInfos), req.Limit), nil
+}
+
+func (server *VideoRecServiceServer) getFallbackVideos(
+	limit int32,
+) (*pb.GetTopVideosResponse, bool) {
+	videos, populated := server.cache.load()
+	if !populated {
+		return nil, false
+	}
+	if limit > 0 && int(limit) < len(videos) {
+		videos = videos[:limit]
+	}
+	return &pb.GetTopVideosResponse{
+		Videos:        videos,
+		StaleResponse: true,
+	}, true
 }
 
 func withRetry[T any](
@@ -198,9 +285,9 @@ func (server *VideoRecServiceServer) getUserServiceClient() (
 					grpc.WithTransportCredentials(insecure.NewCredentials()))
 			})
 		if err != nil {
-			log.Printf("failed to connect to UserService: %v", err)
-			return nil, nil, status.Errorf(codes.Unavailable,
-				"failed to connect to UserService: %v", err)
+			log.Printf("failed to setup UserService client: %v", err)
+			return nil, nil, status.Errorf(codes.Internal,
+				"failed to setup UserService client: %v", err)
 		}
 		userServiceClient = upb.NewUserServiceClient(conn)
 		return userServiceClient, conn, nil
@@ -221,9 +308,9 @@ func (server *VideoRecServiceServer) getVideoServiceClient() (
 					grpc.WithTransportCredentials(insecure.NewCredentials()))
 			})
 		if err != nil {
-			log.Printf("failed to connect to VideoService: %v", err)
-			return nil, nil, status.Errorf(codes.Unavailable,
-				"failed to connect to VideoService: %v", err)
+			log.Printf("failed to setup VideoService client: %v", err)
+			return nil, nil, status.Errorf(codes.Internal,
+				"failed to setup VideoService client: %v", err)
 		}
 		videoServiceClient = vpb.NewVideoServiceClient(conn)
 		return videoServiceClient, conn, nil
@@ -301,19 +388,13 @@ func (server *VideoRecServiceServer) getLikedVideos(
 	return likedVideos, nil
 }
 
-type ScoredVideo struct {
-	videoInfo *vpb.VideoInfo
-	score     uint64
-}
-
-func (server *VideoRecServiceServer) getScoredVideos(
+func (server *VideoRecServiceServer) getVideoInfos(
 	ctx context.Context,
 	videoServiceClient vpb.VideoServiceClient,
-	user *upb.UserInfo,
 	videoIds []uint64,
 	maxBatchSize int,
-) ([]ScoredVideo, error) {
-	scoredVideos := make([]ScoredVideo, 0)
+) ([]*vpb.VideoInfo, error) {
+	videoInfos := make([]*vpb.VideoInfo, 0, len(videoIds))
 	for start := 0; start < len(videoIds); start += maxBatchSize {
 		end := min(start+maxBatchSize, len(videoIds))
 		batch := videoIds[start:end]
@@ -336,15 +417,29 @@ func (server *VideoRecServiceServer) getScoredVideos(
 				"expected %d videos, got %d", len(batch),
 				len(videoServiceResponse.Videos))
 		}
-		for _, videoInfo := range videoServiceResponse.Videos {
-			score := (&ranker.BcryptRanker{}).Rank(
-				user.UserCoefficients,
-				videoInfo.VideoCoefficients,
-			)
-			scoredVideos = append(scoredVideos, ScoredVideo{videoInfo, score})
-		}
+		videoInfos = append(videoInfos, videoServiceResponse.Videos...)
 	}
-	return scoredVideos, nil
+	return videoInfos, nil
+}
+
+type ScoredVideo struct {
+	videoInfo *vpb.VideoInfo
+	score     uint64
+}
+
+func scoreVideos(
+	user *upb.UserInfo,
+	videoInfos []*vpb.VideoInfo,
+) []ScoredVideo {
+	scoredVideos := make([]ScoredVideo, 0, len(videoInfos))
+	for _, videoInfo := range videoInfos {
+		score := (&ranker.BcryptRanker{}).Rank(
+			user.UserCoefficients,
+			videoInfo.VideoCoefficients,
+		)
+		scoredVideos = append(scoredVideos, ScoredVideo{videoInfo, score})
+	}
+	return scoredVideos
 }
 
 func sortAndTruncate(
@@ -389,9 +484,59 @@ func (server *VideoRecServiceServer) GetStats(
 		VideoServiceErrors: server.stats.numReqsErrVideoService,
 		AverageLatencyMs:   float32(server.stats.avgReqLatencyMs),
 		P99LatencyMs:       p99ReqLatencyMs,
+		StaleResponses:     server.stats.numReqsStale,
 	}, nil
 }
 
-func (server *VideoRecServiceServer) ContinuallyRefreshCache() {
+func (server *VideoRecServiceServer) RefreshCache(ctx context.Context) error {
+	videoServiceClient, videoConn, err := server.getVideoServiceClient()
+	if err != nil {
+		return err
+	}
+	if videoConn != nil {
+		defer videoConn.Close()
+	}
 
+	trendingResponse, err := withRetry(
+		server.options.DisableRetry,
+		server.stats.logVideoServiceError,
+		func() (*vpb.GetTrendingVideosResponse, error) {
+			return videoServiceClient.GetTrendingVideos(ctx,
+				&vpb.GetTrendingVideosRequest{})
+		})
+	if err != nil {
+		log.Printf("GetTrendingVideos failed: %v", err)
+		return status.Errorf(status.Code(err),
+			"GetTrendingVideos failed: %v", err)
+	}
+
+	videoInfos, err := server.getVideoInfos(ctx, videoServiceClient,
+		trendingResponse.Videos, server.options.MaxBatchSize)
+	if err != nil {
+		return err
+	}
+
+	server.cache.store(videoInfos, trendingResponse.ExpirationTimeS)
+	return nil
+}
+
+func (server *VideoRecServiceServer) ContinuallyRefreshCache() {
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(),
+			cacheRefreshTimeout)
+		err := server.RefreshCache(ctx)
+		cancel()
+
+		if err != nil {
+			log.Printf("trending cache refresh failed, retrying in %v: %v",
+				cacheRefreshBackoff, err)
+			time.Sleep(cacheRefreshBackoff)
+			continue
+		}
+
+		wait := max(time.Until(server.cache.expiration()),
+			cacheRefreshBackoff)
+		log.Printf("trending cache refreshed, next refresh in %v", wait)
+		time.Sleep(wait)
+	}
 }

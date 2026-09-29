@@ -1,3 +1,24 @@
-sat 2pm-6pm A1-A6
-sun 1pm-6pm A7-A8, B1-B3
-sun 9pm-11pm C1
+ESTIMATE of time to complete assignment: 10 hours
+
+      Time     Time
+Date  Started  Spent Work completed
+----  -------  ----  --------------
+09/25 10:00pm  1:30  read assignment and worked through architecture ideas
+09/26  2:00pm  4:00  completed A1-A6 (core recommendation functionality)
+09/27  1:00pm  5:00  completed A7-A8 (batching and testing) and B1-B3 (stats)
+09/27  9:00pm  2:00  completed C1-C2 (retries and fallbacks)
+09/28  7:00pm  3:00  wrote up all discussion points and completed final tests
+               ----
+               15:30  TOTAL time spent
+
+Once I understood the various components of the starter code, the implementation
+was quite straightforward and the only thing I considered tricky was designing
+the functions around suitable abstractions for future work (e.g., retries).
+Instead, I spent a great deal of time thinking about how I would test my service.
+I tried to cover many cases I could think of in terms of unit testing and
+end-to-end functionality, but there were some things I chose not to test because 
+they seemed implementation-specific rather than part of the specification. 
+Moreover, I struggled testing some non-deterministic aspects of the code such
+as ensuring the average latency fluctuates properly, since it is quite difficult
+to prove an upper bound on latencies (CPUs can throttle, the scheduler can
+interfere, etc).

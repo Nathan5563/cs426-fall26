@@ -1,18 +1,18 @@
-# A1 - TODO
+# A1
 
-**Discussion**: What networking/socket API(s) do you think `NewClient(...)` call corresponds to or is similar to? (For reference, you can find example socket APIs [here](https://en.wikipedia.org/wiki/Berkeley_sockets#Socket_API_functions) or in the slides for Lecture 3.) Include your responses under a heading **A1** in `discussions.md`.
+The `NewClient(...)` call seems to correspond to `socket()` and address resolution setup, but I doubt it does any network I/O by itself, as it would be more efficient to just set this up and defer connection until the RPC is called. After some research, I found that this is indeed true.
 
-# A2 - TODO
+# A2
 
-**Discussion**: In what cases do you think the `NewClient()` call will fail? What status code do you think you should return for these cases? Include your responses and reasoning (why you picked the particular code) under a heading **A2** in `discussions.md`.
+Since `NewClient(...)` does not do any network I/O, it can only fail on configuration issues. For example, malformed addresses, no transport credentials nor insecure credentials, etc., which are all errors caused by internal failures and have nothing to do with the client RPC caller. Thus, I chose `codes.Internal`.
 
-# A3 - TODO
+# A3
 
-**Discussion**: What networking/system calls do you think will be used under the hood when you call `GetUser()`? What cases do you think this call / these calls can return an error? You may find the slides from Lecture 3 helpful. Could `GetUser` return errors in cases where the network calls succeed? Include your responses under a heading **A3** in `discussions.md`.
+Since `GetUser(...)` is a gRPC call, it likely uses the previously-setup connection object, `connect`s to it if not already connected, then `send`s and `recv`s data through the socket. These can return errors if the connection fails to open, if the send/recv fail to write/read, the server isn't listening, etc. Even if all network calls succeed, `GetUser(...)` may fail if the network calls return data of a user who doesn't exist, at which point the gRPC call fails with a specific error code.
 
-# ExtraCredit1 - TODO
+# ExtraCredit1
 
-**ExtraCredit1**: How are these errors detected? Include your responses under a heading `ExtraCredit1` in `discussions.md`.
+Failing syscalls return -1 and put the failure cause in the thread-local global variable `errno`, which Go provides as an `error` type. At the gRPC level, failures are easily detected by the status code.
 
 # A4
 
@@ -26,10 +26,6 @@ Top Recommended Video: Video id=1163, title="glamorous off", author=Baron Langwo
 # A8
 
 Sending batched requests concurrently can be useful by providing lower latency per request. For this service, however, the documentation says that the ranker code dominates latency, so the complexity that comes with handling errors in concurrent batches far outweighs the benefits. Additionally, sending batches concurrently means that each server now gets N simultaneous requests instead of 1 request at a time, which increases pressure on the servers under load spikes and partly undoes the benefit of capping the max batch size. For those reasons, I chose to stick with the sequential implementation.
-
-# ExtraCredit2 - TODO
-
-**ExtraCredit2**: Assume that handling one batch request is cheap up to the batch size limit. How could you reduce the total number of requests to `UserService` and `VideoService` using batching, assuming you have many incoming requests to `VideoRecService`? Describe how you would implement this at a high-level (bullet points and pseudocode are fine) but you do not need to implement it in your service. Include your responses under a heading `ExtraCredit2` in `discussions.md`.
 
 # B2 + ExtraCredit3
 
@@ -48,22 +44,18 @@ Sending batched requests concurrently can be useful by providing lower latency p
 |1790544646245709|        105|     0|       1|       0|       0|       62.95|   96.55|   0|
 |1790544647244976|        115|     0|       1|       0|       0|       63.41|   96.54|   0|
 
-# C1 - TODO
+# C1
 
-**Discussion**: Why might retrying be a bad option? In what cases should you *not* retry a request? Add your response under heading **C1** in `discussions.md`.
+If a backend is failing because it's overwhelmed, retrying only compounds this effect. Moreover, retrying when the backend services return errors corresponding to non-retryable failures is not helpful. One example of a retryable error code is `codes.Unavailable`, whereas an example of a non-retryable error code is `codes.PermissionDenied`.
 
-# C2 - TODO
+# C2
 
-**Discussion**: What should you do if `VideoService` is still down and your responses are past expiration? Return expired responses or an error? What are the tradeoffs?
+As described in the instructions, I chose to keep serving the expired trending videos, and log a stale response in the statistics, as long as at least one refresh has ever succeeded (i.e., the cache is non-empty). A list of former trending videos, whose age is O(downtime), is still a more useful set of recommendations than an error. On the other hand, if the outage is very long, the data can be arbitrarily out-of-date and the videos may have been deleted. Simply returning errors is truthful, so it has its benefits there. A mitigation to the stale response case may be to set a timer and start returning errors once the cache's contents are considered too old.
 
-For this lab, prefer to return expired responses over an error if you can cache at least one
-successful set of trending videos. Note down the tradeoffs of the strategies under heading **C2**
-in `discussions.md`.
+# C3
 
-# C3 - TODO
+If `UserService` fails, there's not much we can do since we know nothing about the user and the videos they would like, so resorting to the trending videos from the cache is preferred. If `VideoService` fails, we can try more interesting strategies. For example, we can cache (userCoefficients, videoInfos) pairs from previous responses, then return the videos recommended for the most recent user who is most similar to the calling user, per the ranking algorithm. This is helpful since it provides more useful responses than globally trending videos. Of course, the tradeoff here is more complexity, storage, and latency.
 
-Name at least one additional strategy you could use to improve the reliability
-of `VideoRecService` (successful, and useful responses) in the event of failures of `UserService`
-or `VideoService`. What tradeoffs would you make and why? Add your response under heading **C3** in `discussions.md`.
+# C4
 
-# C4 - TODO
+Since `NewClient(...)` is lazy in connecting/doing any network I/O, in high-throughput cases we create many connections and all of them incur a high cost on the first RPC (TCP handshake, HTTP setup, new file descriptor, new port). To avoid this, we can create shared connections once and store them in the server, and use them for every incoming request. The downside of this is that we are connected to single instances of the servers, whereas creating connections on each request allows the backend to route the connections to the appropriate instances for load balancing.

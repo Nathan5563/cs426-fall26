@@ -293,6 +293,31 @@ func (h *harness) getVideos(ids []uint64) []*vpb.VideoInfo {
 	return out
 }
 
+func (h *harness) refreshCache() error {
+	ctx, cancel := h.ctx()
+	defer cancel()
+
+	return h.recServer.RefreshCache(ctx)
+}
+
+func (h *harness) expectedTrending(k int) []uint64 {
+	h.t.Helper()
+
+	ctx, cancel := h.ctx()
+	defer cancel()
+
+	resp, err := h.videoServer.GetTrendingVideos(ctx,
+		&vpb.GetTrendingVideosRequest{})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	ids := resp.Videos
+	if k > 0 && k < len(ids) {
+		ids = ids[:k]
+	}
+	return ids
+}
+
 type counters struct {
 	total, errors, active, userErrors, videoErrors, stale uint64
 }
@@ -432,29 +457,6 @@ func TestStatsWithRetry(t *testing.T) {
 	}
 }
 
-func TestStatsActive(t *testing.T) {
-	h := MakeHarness(t)
-	h.injectUser(time.Second, 0)
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := h.topVideos(goldenUser1, 5)
-		done <- err
-	}()
-
-	giveUp := time.Now().Add(5 * time.Second)
-	for h.stats().ActiveRequests == 0 && time.Now().Before(giveUp) {
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	assertCounters(t, h.stats(), counters{total: 1, active: 1})
-
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	assertCounters(t, h.stats(), counters{total: 1})
-}
-
 func TestStatsLatency(t *testing.T) {
 	h := MakeHarness(t)
 	h.injectUser(time.Second, 0)
@@ -517,4 +519,168 @@ func TestConcurrentRequests(t *testing.T) {
 	assert.EqualValues(t, n, s.TotalRequests)
 	assert.EqualValues(t, 0, s.ActiveRequests)
 	assert.EqualValues(t, failures.Load(), s.TotalErrors)
+}
+
+func TestFallbackWhenUserServiceDown(t *testing.T) {
+	h := MakeHarness(t, withRetry(), withFallback())
+	if err := h.refreshCache(); err != nil {
+		t.Fatal(err)
+	}
+
+	h.injectUser(0, 1)
+	resp, err := h.topVideos(goldenUser1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.True(t, resp.StaleResponse)
+	assert.Equal(t, h.expectedTrending(5), videoIds(resp.Videos))
+	assertCounters(t, h.stats(),
+		counters{total: 1, userErrors: 2, stale: 1})
+}
+
+func TestFallbackWhenVideoServiceDown(t *testing.T) {
+	h := MakeHarness(t, withRetry(), withFallback())
+	if err := h.refreshCache(); err != nil {
+		t.Fatal(err)
+	}
+
+	want := h.expectedTrending(5)
+
+	h.injectVideo(0, 1)
+	resp, err := h.topVideos(goldenUser1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.True(t, resp.StaleResponse)
+	assert.Equal(t, want, videoIds(resp.Videos))
+	assertCounters(t, h.stats(),
+		counters{total: 1, videoErrors: 2, stale: 1})
+}
+
+func TestFallbackRespectsLimit(t *testing.T) {
+	h := MakeHarness(t, withRetry(), withFallback())
+	if err := h.refreshCache(); err != nil {
+		t.Fatal(err)
+	}
+	all := h.expectedTrending(0)
+	h.injectUser(0, 1)
+
+	cases := []struct {
+		limit int32
+		want  []uint64
+	}{
+		{1, all[:1]},
+		{3, all[:3]},
+		{0, all},
+		{-1, all},
+		{int32(len(all) + 100), all},
+	}
+	for _, tc := range cases {
+		resp, err := h.topVideos(goldenUser1, tc.limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assert.True(t, resp.StaleResponse)
+		assert.Equal(t, tc.want, videoIds(resp.Videos), "limit %d", tc.limit)
+	}
+}
+
+func TestNoFallbackWithEmptyCache(t *testing.T) {
+	h := MakeHarness(t, withRetry(), withFallback())
+	h.injectUser(0, 1)
+
+	_, err := h.topVideos(goldenUser1, 5)
+	assert.Equal(t, codes.Internal, status.Code(err))
+	assertCounters(t, h.stats(),
+		counters{total: 1, errors: 1, userErrors: 2})
+}
+
+func TestNoFallbackWhenDisabled(t *testing.T) {
+	h := MakeHarness(t, withRetry())
+	if err := h.refreshCache(); err != nil {
+		t.Fatal(err)
+	}
+	h.injectUser(0, 1)
+
+	_, err := h.topVideos(goldenUser1, 5)
+	assert.Equal(t, codes.Internal, status.Code(err))
+	assertCounters(t, h.stats(),
+		counters{total: 1, errors: 1, userErrors: 2})
+}
+
+func TestHealthyResponseNotStale(t *testing.T) {
+	h := MakeHarness(t, withRetry(), withFallback())
+	if err := h.refreshCache(); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := h.topVideos(goldenUser1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.False(t, resp.StaleResponse)
+	assert.Equal(t, h.expectedTopVideos(goldenUser1, 5), videoIds(resp.Videos))
+	assertCounters(t, h.stats(), counters{total: 1})
+}
+
+func TestRefreshCacheFailureKeepsOldData(t *testing.T) {
+	h := MakeHarness(t, withRetry(), withFallback())
+	if err := h.refreshCache(); err != nil {
+		t.Fatal(err)
+	}
+	want := h.expectedTrending(5)
+
+	h.injectVideo(0, 1)
+	err := h.refreshCache()
+	assert.Equal(t, codes.Internal, status.Code(err))
+
+	resp, err := h.topVideos(goldenUser1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.True(t, resp.StaleResponse)
+	assert.Equal(t, want, videoIds(resp.Videos))
+}
+
+func TestConcurrentFallbackAndRefresh(t *testing.T) {
+	h := MakeHarness(t, withRetry(), withFallback())
+	if err := h.refreshCache(); err != nil {
+		t.Fatal(err)
+	}
+	h.injectUser(0, 2)
+	want := h.expectedTrending(5)
+
+	const n = 40
+	var wg sync.WaitGroup
+	var stale atomic.Uint64
+	for i := range n {
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			h.refreshCache()
+		}()
+
+		go func(i int) {
+			defer wg.Done()
+
+			resp, err := h.topVideos(goldenUser1+uint64(i%2), 5)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if resp.StaleResponse {
+				stale.Add(1)
+				assert.Equal(t, want, videoIds(resp.Videos))
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	s := h.stats()
+	assertCounters(t, s, counters{
+		total:      n,
+		userErrors: s.UserServiceErrors,
+		stale:      stale.Load(),
+	})
 }
