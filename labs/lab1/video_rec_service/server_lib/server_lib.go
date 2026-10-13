@@ -5,6 +5,7 @@ import (
 	"log"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"cs426.yale.edu/lab1/ranker"
@@ -36,6 +37,8 @@ type VideoRecServiceOptions struct {
 	DisableFallback bool
 	// If set, disable all retries
 	DisableRetry bool
+	// Number of gRPC client connections to each of UserService and VideoService
+	ClientPoolSize int
 }
 
 type VideoRecServiceStats struct {
@@ -139,11 +142,13 @@ func (cache *trendingCache) expiration() time.Time {
 
 type VideoRecServiceServer struct {
 	pb.UnimplementedVideoRecServiceServer
-	options            VideoRecServiceOptions
-	stats              *VideoRecServiceStats
-	userServiceClient  upb.UserServiceClient
-	videoServiceClient vpb.VideoServiceClient
-	cache              trendingCache
+	options             VideoRecServiceOptions
+	stats               *VideoRecServiceStats
+	userServiceClients  []upb.UserServiceClient
+	videoServiceClients []vpb.VideoServiceClient
+	userClientIndex     atomic.Uint64
+	videoClientIndex    atomic.Uint64
+	cache               trendingCache
 }
 
 func MakeVideoRecServiceServer(options VideoRecServiceOptions) (
@@ -155,9 +160,38 @@ func MakeVideoRecServiceServer(options VideoRecServiceOptions) (
 			"MaxBatchSize must be positive")
 	}
 
+	if options.ClientPoolSize <= 0 {
+		return nil, status.Error(codes.InvalidArgument,
+			"ClientPoolSize must be positive")
+	}
+
+	userServiceClients := make([]upb.UserServiceClient, 0, options.ClientPoolSize)
+	for range options.ClientPoolSize {
+		userConn, err := grpc.NewClient(options.UserServiceAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return nil, err
+		}
+		userServiceClients = append(userServiceClients,
+			upb.NewUserServiceClient(userConn))
+	}
+
+	videoServiceClients := make([]vpb.VideoServiceClient, 0, options.ClientPoolSize)
+	for range options.ClientPoolSize {
+		videoConn, err := grpc.NewClient(options.VideoServiceAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return nil, err
+		}
+		videoServiceClients = append(videoServiceClients,
+			vpb.NewVideoServiceClient(videoConn))
+	}
+
 	return &VideoRecServiceServer{
-		options: options,
-		stats:   MakeVideoRecServiceStats(),
+		options:             options,
+		stats:               MakeVideoRecServiceStats(),
+		userServiceClients:  userServiceClients,
+		videoServiceClients: videoServiceClients,
 	}, nil
 }
 
@@ -167,11 +201,21 @@ func MakeVideoRecServiceServerWithMocks(
 	mockVideoServiceClient *vmc.MockVideoServiceClient,
 ) *VideoRecServiceServer {
 	return &VideoRecServiceServer{
-		options:            options,
-		stats:              MakeVideoRecServiceStats(),
-		userServiceClient:  mockUserServiceClient,
-		videoServiceClient: mockVideoServiceClient,
+		options:             options,
+		stats:               MakeVideoRecServiceStats(),
+		userServiceClients:  []upb.UserServiceClient{mockUserServiceClient},
+		videoServiceClients: []vpb.VideoServiceClient{mockVideoServiceClient},
 	}
+}
+
+func (server *VideoRecServiceServer) userServiceClient() upb.UserServiceClient {
+	idx := server.userClientIndex.Add(1) - 1
+	return server.userServiceClients[idx%uint64(len(server.userServiceClients))]
+}
+
+func (server *VideoRecServiceServer) videoServiceClient() vpb.VideoServiceClient {
+	idx := server.videoClientIndex.Add(1) - 1
+	return server.videoServiceClients[idx%uint64(len(server.videoServiceClients))]
 }
 
 func (server *VideoRecServiceServer) GetTopVideos(
@@ -200,13 +244,7 @@ func (server *VideoRecServiceServer) getPersonalizedVideos(
 	ctx context.Context,
 	req *pb.GetTopVideosRequest,
 ) (*pb.GetTopVideosResponse, error) {
-	userServiceClient, userConn, err := server.getUserServiceClient()
-	if err != nil {
-		return nil, err
-	}
-	if userConn != nil {
-		defer userConn.Close()
-	}
+	userServiceClient := server.userServiceClient()
 
 	user, err := server.getUser(ctx, userServiceClient, req)
 	if err != nil {
@@ -219,13 +257,7 @@ func (server *VideoRecServiceServer) getPersonalizedVideos(
 		return nil, err
 	}
 
-	videoServiceClient, videoConn, err := server.getVideoServiceClient()
-	if err != nil {
-		return nil, err
-	}
-	if videoConn != nil {
-		defer videoConn.Close()
-	}
+	videoServiceClient := server.videoServiceClient()
 
 	videoInfos, err := server.getVideoInfos(ctx,
 		videoServiceClient, likedVideos, server.options.MaxBatchSize)
@@ -270,52 +302,6 @@ func withRetry[T any](
 		logError()
 	}
 	return result, err
-}
-
-func (server *VideoRecServiceServer) getUserServiceClient() (
-	upb.UserServiceClient, *grpc.ClientConn, error,
-) {
-	userServiceClient := server.userServiceClient
-	if userServiceClient == nil {
-		conn, err := withRetry(
-			server.options.DisableRetry,
-			server.stats.logUserServiceError,
-			func() (*grpc.ClientConn, error) {
-				return grpc.NewClient(server.options.UserServiceAddr,
-					grpc.WithTransportCredentials(insecure.NewCredentials()))
-			})
-		if err != nil {
-			log.Printf("failed to setup UserService client: %v", err)
-			return nil, nil, status.Errorf(codes.Internal,
-				"failed to setup UserService client: %v", err)
-		}
-		userServiceClient = upb.NewUserServiceClient(conn)
-		return userServiceClient, conn, nil
-	}
-	return userServiceClient, nil, nil
-}
-
-func (server *VideoRecServiceServer) getVideoServiceClient() (
-	vpb.VideoServiceClient, *grpc.ClientConn, error,
-) {
-	videoServiceClient := server.videoServiceClient
-	if videoServiceClient == nil {
-		conn, err := withRetry(
-			server.options.DisableRetry,
-			server.stats.logVideoServiceError,
-			func() (*grpc.ClientConn, error) {
-				return grpc.NewClient(server.options.VideoServiceAddr,
-					grpc.WithTransportCredentials(insecure.NewCredentials()))
-			})
-		if err != nil {
-			log.Printf("failed to setup VideoService client: %v", err)
-			return nil, nil, status.Errorf(codes.Internal,
-				"failed to setup VideoService client: %v", err)
-		}
-		videoServiceClient = vpb.NewVideoServiceClient(conn)
-		return videoServiceClient, conn, nil
-	}
-	return videoServiceClient, nil, nil
 }
 
 func (server *VideoRecServiceServer) getUser(
@@ -489,13 +475,7 @@ func (server *VideoRecServiceServer) GetStats(
 }
 
 func (server *VideoRecServiceServer) RefreshCache(ctx context.Context) error {
-	videoServiceClient, videoConn, err := server.getVideoServiceClient()
-	if err != nil {
-		return err
-	}
-	if videoConn != nil {
-		defer videoConn.Close()
-	}
+	videoServiceClient := server.videoServiceClient()
 
 	trendingResponse, err := withRetry(
 		server.options.DisableRetry,

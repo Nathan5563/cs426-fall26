@@ -1,0 +1,154 @@
+table ip kube-proxy {
+	comment "rules for kube-proxy"
+	set hairpin-connections {
+		type ipv4_addr . ipv4_addr . inet_proto . inet_service
+		comment "service hairpin connections"
+		elements = { 10.244.0.3 . 10.244.0.3 . tcp . 53,
+			     10.244.0.5 . 10.244.0.5 . tcp . 53,
+			     10.244.0.3 . 10.244.0.3 . udp . 53,
+			     10.244.0.5 . 10.244.0.5 . udp . 53,
+			     10.244.0.2 . 10.244.0.2 . tcp . 8080,
+			     10.244.0.6 . 10.244.0.6 . tcp . 8080,
+			     10.244.0.3 . 10.244.0.3 . tcp . 9153,
+			     10.244.0.5 . 10.244.0.5 . tcp . 9153 }
+	}
+
+	set cluster-ips {
+		type ipv4_addr
+		comment "Active ClusterIPs"
+		elements = { 10.96.0.1, 10.96.0.10,
+			     10.96.219.147 }
+	}
+
+	set nodeport-ips {
+		type ipv4_addr
+		comment "IPs that accept NodePort traffic"
+		elements = { 172.18.0.3 }
+	}
+
+	map no-endpoint-services {
+		type ipv4_addr . inet_proto . inet_service : verdict
+		comment "vmap to drop or reject packets to services with no endpoints"
+	}
+
+	map no-endpoint-nodeports {
+		type inet_proto . inet_service : verdict
+		comment "vmap to drop or reject packets to service nodeports with no endpoints"
+	}
+
+	map firewall-ips {
+		type ipv4_addr . inet_proto . inet_service : verdict
+		comment "destinations that are subject to LoadBalancerSourceRanges"
+	}
+
+	map service-ips {
+		type ipv4_addr . inet_proto . inet_service : verdict
+		comment "ClusterIP, ExternalIP and LoadBalancer IP traffic"
+		elements = { 10.96.0.10 . tcp . 53 : goto service-NWBZK7IH-kube-system/kube-dns/tcp/dns-tcp,
+			     10.96.0.10 . udp . 53 : goto service-FY5PMXPG-kube-system/kube-dns/udp/dns,
+			     10.96.219.147 . tcp . 80 : goto service-CN5CJ5ON-default/video-rec/tcp/,
+			     10.96.0.1 . tcp . 443 : goto service-2QRHZV4L-default/kubernetes/tcp/https,
+			     10.96.0.10 . tcp . 9153 : goto service-AS2KJYAD-kube-system/kube-dns/tcp/metrics }
+	}
+
+	map service-nodeports {
+		type inet_proto . inet_service : verdict
+		comment "NodePort traffic"
+	}
+
+	chain filter-prerouting-pre-dnat {
+		type filter hook prerouting priority dstnat - 10; policy accept;
+		ct state new jump firewall-check
+	}
+
+	chain filter-output-pre-dnat {
+		type filter hook output priority dstnat - 10; policy accept;
+		ct state new jump firewall-check
+	}
+
+	chain filter-input {
+		type filter hook input priority filter; policy accept;
+		ct state new jump nodeport-endpoints-check
+		ct state new jump service-endpoints-check
+	}
+
+	chain filter-forward {
+		type filter hook forward priority filter; policy accept;
+		ct state new jump service-endpoints-check
+		ct state new jump cluster-ips-check
+	}
+
+	chain filter-output {
+		type filter hook output priority filter; policy accept;
+		ct state new jump service-endpoints-check
+		ct state new jump cluster-ips-check
+	}
+
+	chain nat-prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		jump services
+	}
+
+	chain nat-output {
+		type nat hook output priority dstnat; policy accept;
+		jump services
+	}
+
+	chain nat-postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		jump masquerading
+	}
+
+	chain nodeport-endpoints-check {
+		ip daddr @nodeport-ips meta l4proto . th dport vmap @no-endpoint-nodeports
+	}
+
+	chain service-endpoints-check {
+		ip daddr . meta l4proto . th dport vmap @no-endpoint-services
+	}
+
+	chain firewall-check {
+		ip daddr . meta l4proto . th dport vmap @firewall-ips
+	}
+
+	chain services {
+		ip daddr @cluster-ips ip saddr != 10.244.0.0/16 meta mark set meta mark | 0x00004000 comment "masquerade clusterIP traffic from outside cluster"
+		ip daddr . meta l4proto . th dport vmap @service-ips
+		ip daddr @nodeport-ips meta l4proto . th dport vmap @service-nodeports
+	}
+
+	chain masquerading {
+		meta mark & 0x00004000 != 0x00000000 meta mark set meta mark ^ 0x00004000 masquerade fully-random
+		ct status dnat ip saddr . ip daddr . meta l4proto . th dport @hairpin-connections masquerade fully-random
+	}
+
+	chain cluster-ips-check {
+		ip daddr @cluster-ips reject comment "Reject traffic to invalid ports of ClusterIPs"
+		ip daddr 10.96.0.0/16 drop comment "Drop traffic to unallocated ClusterIPs"
+	}
+
+	chain reject-chain {
+		comment "helper for @no-endpoint-services / @no-endpoint-nodeports"
+		reject
+	}
+
+	chain service-2QRHZV4L-default/kubernetes/tcp/https {
+		meta l4proto tcp dnat to 172.18.0.3:6443
+	}
+
+	chain service-NWBZK7IH-kube-system/kube-dns/tcp/dns-tcp {
+		meta l4proto tcp dnat ip to numgen random mod 2 map { 0 : 10.244.0.3 . 53, 1 : 10.244.0.5 . 53 }
+	}
+
+	chain service-AS2KJYAD-kube-system/kube-dns/tcp/metrics {
+		meta l4proto tcp dnat ip to numgen random mod 2 map { 0 : 10.244.0.3 . 9153, 1 : 10.244.0.5 . 9153 }
+	}
+
+	chain service-FY5PMXPG-kube-system/kube-dns/udp/dns {
+		meta l4proto udp dnat ip to numgen random mod 2 map { 0 : 10.244.0.3 . 53, 1 : 10.244.0.5 . 53 }
+	}
+
+	chain service-CN5CJ5ON-default/video-rec/tcp/ {
+		meta l4proto tcp dnat ip to numgen random mod 2 map { 0 : 10.244.0.2 . 8080, 1 : 10.244.0.6 . 8080 }
+	}
+}

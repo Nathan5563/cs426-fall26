@@ -1,0 +1,16 @@
+apiVersion: cs426.cloud/v1
+kind: LoadgenResult
+metadata:
+  creationTimestamp: "2026-10-11T02:11:00Z"
+  generation: 1
+  name: loadgen-b5-001
+  namespace: naa67
+  resourceVersion: "1791684660305039024"
+  uid: dd63c9f5-b6d9-43d8-810b-cd4a6368d953
+spec:
+  average_latency_ms: 1045.8823
+  duration_s: 60
+  error_msg: ""
+  errors: 0
+  requests: 51
+  stale_responses: 0

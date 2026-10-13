@@ -1,0 +1,25 @@
+# A lookup table keyed by (destination IP, protocol, port), instead of walking the whole list of per-service rules like iptables.
+map service-ips {
+	# The key is a destination IP, a protocol, and a port, and the value is a jump target.
+	type ipv4_addr . inet_proto . inet_service : verdict
+
+	# The comment describes what this table is for: every ClusterIP, ExternalIP and LoadBalancer IP in the cluster.
+	comment "ClusterIP, ExternalIP and LoadBalancer IP traffic"
+
+	# The table's contents: Each entry maps one service address to the chain that handles it.
+	elements = { 10.96.0.10 . tcp . 53 : goto service-NWBZK7IH-kube-system/kube-dns/tcp/dns-tcp,
+				10.96.0.10 . udp . 53 : goto service-FY5PMXPG-kube-system/kube-dns/udp/dns,
+
+				# Our service: traffic to 10.96.219.147 on TCP port 80 goes to the video-rec chain.
+				10.96.219.147 . tcp . 80 : goto service-CN5CJ5ON-default/video-rec/tcp/,
+
+				10.96.0.1 . tcp . 443 : goto service-2QRHZV4L-default/kubernetes/tcp/https,
+				10.96.0.10 . tcp . 9153 : goto service-AS2KJYAD-kube-system/kube-dns/tcp/metrics }
+}
+
+# The chain for our service (i.e., above's jump target), which does the work of the iptables KUBE-SVC chain and both KUBE-SEP chains:
+chain service-CN5CJ5ON-default/video-rec/tcp/ {
+	# Pick a random number 0 or 1, turn it into a pod address using the inline map, and rewrite the packet's destination to that pod's IP and port 8080.
+	# This is done once per connection, and later packets follow the same choice like in iptables.
+	meta l4proto tcp dnat ip to numgen random mod 2 map { 0 : 10.244.0.2 . 8080, 1 : 10.244.0.6 . 8080 }
+}

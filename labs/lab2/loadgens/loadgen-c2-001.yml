@@ -1,0 +1,16 @@
+apiVersion: cs426.cloud/v1
+kind: LoadgenResult
+metadata:
+  creationTimestamp: "2026-10-12T19:10:29Z"
+  generation: 1
+  name: loadgen-c2-001
+  namespace: naa67
+  resourceVersion: "1791832229962143017"
+  uid: f62668f6-aed5-4d95-bc39-9fb02c49b9c3
+spec:
+  average_latency_ms: 974.7059
+  duration_s: 60
+  error_msg: ""
+  errors: 0
+  requests: 51
+  stale_responses: 0

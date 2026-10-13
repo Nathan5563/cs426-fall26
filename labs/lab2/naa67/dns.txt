@@ -1,0 +1,104 @@
+$ kubectl exec dnsutils -- cat /etc/resolv.conf
+search naa67.svc.cluster.local svc.cluster.local cluster.local us-central1-b.c.cs-426-fall-2026.internal c.cs-426-fall-2026.internal google.internal
+nameserver 34.118.224.10
+options ndots:5
+
+$ kubectl exec dnsutils -- dig +search user-service.default
+
+; <<>> DiG 9.9.5-9+deb8u19-Debian <<>> +search user-service.default
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 6021
+;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+;; QUESTION SECTION:
+;user-service.default.svc.cluster.local.	IN A
+
+;; ANSWER SECTION:
+user-service.default.svc.cluster.local.	30 IN A	34.118.237.27
+
+;; Query time: 1 msec
+;; SERVER: 34.118.224.10#53(34.118.224.10)
+;; WHEN: Tue Oct 13 00:51:18 UTC 2026
+;; MSG SIZE  rcvd: 121
+
+
+$ kubectl exec dnsutils -- dig SRV _grpc._tcp.user-service.default.svc.cluster.local
+
+; <<>> DiG 9.9.5-9+deb8u19-Debian <<>> SRV _grpc._tcp.user-service.default.svc.cluster.local
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 3261
+;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 2
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+;; QUESTION SECTION:
+;_grpc._tcp.user-service.default.svc.cluster.local. IN SRV
+
+;; ANSWER SECTION:
+_grpc._tcp.user-service.default.svc.cluster.local. 30 IN SRV 10 100 8081 user-service.default.svc.cluster.local.
+
+;; ADDITIONAL SECTION:
+user-service.default.svc.cluster.local.	30 IN A	34.118.237.27
+
+;; Query time: 1 msec
+;; SERVER: 34.118.224.10#53(34.118.224.10)
+;; WHEN: Tue Oct 13 00:51:19 UTC 2026
+;; MSG SIZE  rcvd: 239
+
+
+$ kubectl exec dnsutils -- dig SRV _grpc._tcp.video-rec.naa67.svc.cluster.local
+
+; <<>> DiG 9.9.5-9+deb8u19-Debian <<>> SRV _grpc._tcp.video-rec.naa67.svc.cluster.local
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 34942
+;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 2
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+;; QUESTION SECTION:
+;_grpc._tcp.video-rec.naa67.svc.cluster.local. IN SRV
+
+;; ANSWER SECTION:
+_grpc._tcp.video-rec.naa67.svc.cluster.local. 30 IN SRV	10 100 80 video-rec.naa67.svc.cluster.local.
+
+;; ADDITIONAL SECTION:
+video-rec.naa67.svc.cluster.local. 30 IN A	34.118.230.10
+
+;; Query time: 1 msec
+;; SERVER: 34.118.224.10#53(34.118.224.10)
+;; WHEN: Tue Oct 13 00:51:19 UTC 2026
+;; MSG SIZE  rcvd: 219
+
+
+$ kubectl get endpointslices -l kubernetes.io/service-name=video-rec -o wide
+NAME              ADDRESSTYPE   PORTS   ENDPOINTS      AGE
+video-rec-h7cr7   IPv4          8080    10.120.1.112   47h
+
+$ kubectl exec dnsutils -- dig -x 10.120.1.112
+
+; <<>> DiG 9.9.5-9+deb8u19-Debian <<>> -x 10.120.1.112
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 55305
+;; flags: qr aa rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+;; WARNING: recursion requested but not available
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+;; QUESTION SECTION:
+;112.1.120.10.in-addr.arpa.	IN	PTR
+
+;; ANSWER SECTION:
+112.1.120.10.in-addr.arpa. 30	IN	PTR	10-120-1-112.video-rec.naa67.svc.cluster.local.
+
+;; Query time: 2 msec
+;; SERVER: 34.118.224.10#53(34.118.224.10)
+;; WHEN: Tue Oct 13 00:51:20 UTC 2026
+;; MSG SIZE  rcvd: 139
+
+

@@ -1,0 +1,23 @@
+ESTIMATE of time to complete assignment: 10 hours
+
+      Time     Time
+Date  Started  Spent Work completed
+----  -------  ----  --------------
+10/10  4:00pm  2:00  read assignment and material on kubernetes
+10/11  2:00pm  1:00  completed setup and part A
+10/11  4:00pm  2:30  completed part B and ensured proper loadgen results
+10/11  9:00pm  0:45  completed part C and experimented with pool sizes
+10/12  7:00pm  3:00  completed part D and finalized all discussion points
+               ----
+               9:15  TOTAL time spent
+
+The hardest part of this lab was that there are so many different tools to
+configure and work with that many of the failures and bugs were in figuring
+out the right way to use certain tools. My first deployment crashed because
+Kubernetes args replace a Dockerfile CMD entirely, so the container tried to
+run "--batch-size=50". Switching to ENTRYPOINT instead of CMD fixed it. Pushing
+to the registry failed with a 401 even after a successful login, which turned
+out to be the Docker CLI looking for credentials in the wrong home directory.
+I also spent a while confirming that the lopsided 3-1 and 7-1 splits in Grafana 
+were probabilistically possible, rather than a bug, since kube-proxy picks a
+backend independently per connection.

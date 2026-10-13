@@ -1,0 +1,6 @@
+apiVersion: cs426.cloud/v1
+kind: LoadgenRequest
+metadata:
+  name: loadgen-c3-003
+spec:
+  service_name: "video-rec"

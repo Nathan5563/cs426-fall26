@@ -1,0 +1,24 @@
+apiVersion: cs426.cloud/v1
+kind: LoadgenResult
+metadata:
+  creationTimestamp: "2026-10-12T21:03:30Z"
+  generation: 1
+  name: loadgen-c3-003
+  namespace: naa67
+  resourceVersion: "1791839010861711019"
+  uid: 8b0a99a6-c8a3-4750-b5a0-f481a32f0d72
+spec:
+  average_latency_ms: 0
+  duration_s: 0
+  error_msg: |-
+    failed to run load test: failed to send a test GetStatsRequest
+
+    Caused by:
+        0: status: Unavailable, message: "error trying to connect: tcp connect error: Connection timed out (os error 110)", details: [], metadata: MetadataMap { headers: {} }
+        1: transport error
+        2: error trying to connect: tcp connect error: Connection timed out (os error 110)
+        3: tcp connect error: Connection timed out (os error 110)
+        4: Connection timed out (os error 110)
+  errors: 0
+  requests: 0
+  stale_responses: 0

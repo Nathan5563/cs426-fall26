@@ -1,0 +1,31 @@
+# Any packet addressed to the service's virtual IP 10.96.10.18 on TCP port 80 goes to this service's chain.
+-A KUBE-SERVICES -d 10.96.10.18/32 -p tcp -m comment --comment "default/video-rec cluster IP" -m tcp --dport 80 -j KUBE-SVC-CNNJ3HUEE5YPGNDD
+
+# If the client is not a pod (its source address is outside the pod network), tag the packet so its source gets rewritten and the reply comes back through this node.
+-A KUBE-SVC-CNNJ3HUEE5YPGNDD ! -s 10.244.0.0/16 -d 10.96.10.18/32 -p tcp -m comment --comment "default/video-rec cluster IP" -m tcp --dport 80 -j KUBE-MARK-MASQ
+
+# Pick a backend: a fair coin flip sends the packet to the chain for pod 10.244.0.3. This runs only for the first packet of a connection, and later packets reuse the result.
+-A KUBE-SVC-CNNJ3HUEE5YPGNDD -m comment --comment "default/video-rec -> 10.244.0.3:8080" -m statistic --mode random --probability 0.50000000000 -j KUBE-SEP-PA6FPOD4FJJ7FC4K
+
+# If the coin flip did not land, fall through and use pod 10.244.0.4 instead. Together, the two rules give each pod half the new connections.
+-A KUBE-SVC-CNNJ3HUEE5YPGNDD -m comment --comment "default/video-rec -> 10.244.0.4:8080" -j KUBE-SEP-V22TIB2YYZTDHTFO
+
+# Self-connection special case for pod 10.244.0.3: tag it so the source is rewritten, otherwise the pod would see its own address and the reply would be dropped.
+# A pod can't correctly talk to itself through the service otherwise.
+-A KUBE-SEP-PA6FPOD4FJJ7FC4K -s 10.244.0.3/32 -m comment --comment "default/video-rec" -j KUBE-MARK-MASQ
+# This performs the above-explained rewrite, changing the destination from the service IP and port 80 to 10.244.0.3 on port 8080.
+-A KUBE-SEP-PA6FPOD4FJJ7FC4K -p tcp -m comment --comment "default/video-rec" -m tcp -j DNAT --to-destination 10.244.0.3:8080
+
+# Self-connection special case, for pod 10.244.0.4: tag it so the source is rewritten, otherwise the pod would see its own address and the reply would be dropped.
+# A pod can't correctly talk to itself through the service otherwise.
+-A KUBE-SEP-V22TIB2YYZTDHTFO -s 10.244.0.4/32 -m comment --comment "default/video-rec" -j KUBE-MARK-MASQ
+# This performs the above-explained rewrite, changing the destination from the service IP and port 80 to 10.244.0.4 on port 8080.
+-A KUBE-SEP-V22TIB2YYZTDHTFO -p tcp -m comment --comment "default/video-rec" -m tcp -j DNAT --to-destination 10.244.0.4:8080
+
+# Output of curl loop
+video-rec-7bd58c7fbb-cxj29
+video-rec-7bd58c7fbb-v7vcf
+video-rec-7bd58c7fbb-v7vcf
+video-rec-7bd58c7fbb-v7vcf
+video-rec-7bd58c7fbb-cxj29
+video-rec-7bd58c7fbb-cxj29
